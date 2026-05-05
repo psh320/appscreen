@@ -3839,6 +3839,19 @@ function setupEventListeners() {
         openLanguagesModal();
     });
 
+    document.getElementById('import-translations-btn').addEventListener('click', async () => {
+        document.getElementById('language-menu').classList.remove('visible');
+        if (state.screenshots.length === 0) {
+            await showAppAlert('Add screenshots before importing translations.', 'info');
+            return;
+        }
+        const input = document.getElementById('translation-json-input');
+        input.value = '';
+        input.click();
+    });
+
+    document.getElementById('translation-json-input').addEventListener('change', handleTranslationJsonFiles);
+
     // Translate All button
     document.getElementById('translate-all-btn').addEventListener('click', () => {
         document.getElementById('language-menu').classList.remove('visible');
@@ -4842,6 +4855,232 @@ function removeProjectLanguage(lang) {
         syncUIWithState();
         saveState();
     }
+}
+
+async function handleTranslationJsonFiles(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
+    try {
+        const entries = [];
+        const errors = [];
+
+        for (const file of files) {
+            try {
+                const data = JSON.parse(await file.text());
+                const fileLang = detectImportLanguageFromFilename(file.name);
+                entries.push(...extractTranslationEntries(data, fileLang));
+            } catch (error) {
+                errors.push(`${file.name}: ${error.message}`);
+            }
+        }
+
+        if (entries.length === 0) {
+            const detail = errors.length ? `\n\n${errors.join('\n')}` : '';
+            await showAppAlert(`No translations found in the selected JSON file(s).${detail}`, 'error');
+            return;
+        }
+
+        const result = applyImportedTranslationEntries(entries);
+        const skipped = result.skipped ? ` ${result.skipped} item(s) were skipped because the screenshot index was out of range.` : '';
+        const errorText = errors.length ? `\n\nSome files could not be read:\n${errors.join('\n')}` : '';
+        await showAppAlert(`Imported ${result.applied} text value(s) across ${result.languages.size} language(s).${skipped}${errorText}`, result.applied ? 'success' : 'info');
+    } catch (error) {
+        console.error('Translation JSON import failed:', error);
+        await showAppAlert('Import failed: ' + error.message, 'error');
+    } finally {
+        e.target.value = '';
+    }
+}
+
+function normalizeImportLanguageCode(lang) {
+    if (!lang || typeof lang !== 'string') return null;
+    const normalized = lang.trim().toLowerCase().replace('_', '-');
+    if (languageNames[normalized] || languageFlags[normalized]) return normalized;
+    if (/^[a-z]{2}(-[a-z]{2})?$/.test(normalized)) return normalized;
+    return null;
+}
+
+function detectImportLanguageFromFilename(filename) {
+    const base = filename.replace(/\.[^.]+$/, '').toLowerCase();
+    const supportedLangs = Object.keys(languageNames).sort((a, b) => b.length - a.length);
+
+    for (const lang of supportedLangs) {
+        const escapedLang = lang.replace('-', '[-_]?');
+        const pattern = new RegExp(`(^|[_-])${escapedLang}$`, 'i');
+        if (pattern.test(base)) return lang;
+    }
+
+    return null;
+}
+
+function extractTranslationEntries(data, fallbackLang = null) {
+    const entries = [];
+
+    if (Array.isArray(data)) {
+        data.forEach((item, index) => {
+            entries.push(...extractTranslationEntriesFromItem(item, index, fallbackLang));
+        });
+        return entries;
+    }
+
+    if (!data || typeof data !== 'object') {
+        return entries;
+    }
+
+    const declaredLang = normalizeImportLanguageCode(data.lang || data.language || data.locale || data.code) || fallbackLang;
+    const list = data.screenshots || data.items || data.translations;
+
+    if (Array.isArray(list)) {
+        list.forEach((item, index) => {
+            entries.push(...extractTranslationEntriesFromItem(item, index, declaredLang));
+        });
+        return entries;
+    }
+
+    if (data.translations && typeof data.translations === 'object') {
+        entries.push(...extractTranslationEntries(data.translations, declaredLang));
+    }
+
+    Object.entries(data).forEach(([key, value]) => {
+        const lang = normalizeImportLanguageCode(key);
+        if (lang && (Array.isArray(value) || value && typeof value === 'object')) {
+            entries.push(...extractTranslationEntries(value, lang));
+            return;
+        }
+
+        if (declaredLang && /^\d+$/.test(key)) {
+            entries.push(...extractTranslationEntriesFromItem(value, Number(key), declaredLang));
+        }
+    });
+
+    return entries;
+}
+
+function extractTranslationEntriesFromItem(item, index, fallbackLang = null) {
+    if (!item) return [];
+
+    if (typeof item === 'string') {
+        return fallbackLang ? [{ index, lang: fallbackLang, headline: item }] : [];
+    }
+
+    if (typeof item !== 'object') return [];
+
+    const itemLang = normalizeImportLanguageCode(item.lang || item.language || item.locale || item.code) || fallbackLang;
+    const targetIndex = Number.isInteger(item.index) ? item.index : index;
+    const entries = [];
+
+    const headlineByLang = item.headlines || (isPlainObject(item.headline) ? item.headline : null);
+    const subheadlineByLang = item.subheadlines || (isPlainObject(item.subheadline) ? item.subheadline : null);
+
+    if (headlineByLang || subheadlineByLang) {
+        const langs = new Set([
+            ...Object.keys(headlineByLang || {}),
+            ...Object.keys(subheadlineByLang || {})
+        ]);
+
+        langs.forEach((langKey) => {
+            const lang = normalizeImportLanguageCode(langKey);
+            if (!lang) return;
+            entries.push({
+                index: targetIndex,
+                lang,
+                headline: headlineByLang ? headlineByLang[langKey] : undefined,
+                subheadline: subheadlineByLang ? subheadlineByLang[langKey] : undefined
+            });
+        });
+    }
+
+    if (itemLang) {
+        const headline = firstStringValue(item, ['headline', 'title', 'heading', 'h1']);
+        const subheadline = firstStringValue(item, ['subheadline', 'subtitle', 'subheading', 'description', 'body']);
+
+        if (headline !== undefined || subheadline !== undefined) {
+            entries.push({
+                index: targetIndex,
+                lang: itemLang,
+                headline,
+                subheadline
+            });
+        }
+    }
+
+    return entries;
+}
+
+function isPlainObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function firstStringValue(item, keys) {
+    for (const key of keys) {
+        if (typeof item[key] === 'string') return item[key];
+    }
+    return undefined;
+}
+
+function applyImportedTranslationEntries(entries) {
+    let applied = 0;
+    let skipped = 0;
+    const languages = new Set();
+
+    entries.forEach((entry) => {
+        const lang = normalizeImportLanguageCode(entry.lang);
+        const screenshot = state.screenshots[entry.index];
+
+        if (!lang || !screenshot) {
+            skipped++;
+            return;
+        }
+
+        if (!state.projectLanguages.includes(lang)) {
+            addProjectLanguage(lang);
+        }
+
+        screenshot.text = normalizeTextSettings(screenshot.text);
+        const text = screenshot.text;
+
+        if (!text.headlineLanguages.includes(lang)) {
+            text.headlineLanguages.push(lang);
+        }
+        if (!text.subheadlineLanguages.includes(lang)) {
+            text.subheadlineLanguages.push(lang);
+        }
+        if (!text.headlines) text.headlines = {};
+        if (!text.subheadlines) text.subheadlines = {};
+
+        if (typeof entry.headline === 'string') {
+            text.headlines[lang] = entry.headline;
+            applied++;
+            languages.add(lang);
+        }
+
+        if (typeof entry.subheadline === 'string') {
+            text.subheadlines[lang] = entry.subheadline;
+            if (entry.subheadline.trim()) {
+                text.subheadlineEnabled = true;
+            }
+            applied++;
+            languages.add(lang);
+        }
+
+        getTextLanguageSettings(text, lang);
+    });
+
+    if (languages.size > 0) {
+        const firstLang = Array.from(languages)[0];
+        switchGlobalLanguage(firstLang);
+    }
+
+    updateLanguagesList();
+    updateAddLanguageSelect();
+    updateLanguageMenu();
+    updateScreenshotList();
+    syncUIWithState();
+    updateCanvas();
+    saveState();
+
+    return { applied, skipped, languages };
 }
 
 // Language helper functions

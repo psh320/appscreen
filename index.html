@@ -94,6 +94,14 @@
                                     </svg>
                                     Edit Languages...
                                 </button>
+                                <button class="language-menu-edit" id="import-translations-btn">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                                        <path d="M7 10l5 5 5-5"/>
+                                        <path d="M12 15V3"/>
+                                    </svg>
+                                    Import JSON...
+                                </button>
                                 <div class="language-menu-divider"></div>
                                 <button class="language-menu-edit" id="translate-all-btn">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -118,6 +126,7 @@
                             </svg>
                         </button>
                     </div>
+                    <input type="file" id="translation-json-input" accept="application/json,.json" multiple style="display: none;">
                 </div>
                 <div class="project-controls">
                     <div class="project-dropdown" id="project-dropdown">
